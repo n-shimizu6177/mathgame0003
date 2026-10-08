@@ -105,6 +105,9 @@
     .q-edit-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
     .excel-import-box { background: #eef2ff; border: 2px dashed #3f51b5; padding: 14px; border-radius: 8px; margin-bottom: 16px; }
     .team-badge { display: inline-block; padding: 4px 8px; background: #e0f2fe; color: #0369a1; font-weight: bold; border-radius: 4px; font-size: 13px; }
+    .status-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+    .status-playing { background: #fff3cd; color: #856404; }
+    .status-finished { background: #d4edda; color: #155724; }
     .error-msg { color: red; font-size: 13px; margin-top: 6px; display: none; }
   </style>
 </head>
@@ -156,7 +159,7 @@
   <!-- 3. 生徒ロビー画面 -->
   <div id="lobbyScreen" class="screen">
     <h2>対戦待機ロビー</h2>
-    <p style="text-align:center;">接続状況: <strong id="studentStatus" style="color:orange;">接続中...</strong></p>
+    <p style="text-align:center;">接続状況: <strong id="studentStatus" style="color:orange;">教員の準備を待っています...</strong></p>
     <p style="text-align:center; font-size:16px;">所属チーム: <span id="myTeamDisplay" class="team-badge">未割り当て</span></p>
     <p style="text-align: center; color: #666; font-size:14px;">※ホスト（教員）がチーム分けと試合開始を行うまでお待ちください。</p>
     <button class="btn btn-secondary" onclick="resetToTop()">退出して戻る</button>
@@ -219,14 +222,16 @@
       <tbody id="rankingBody"></tbody>
     </table>
 
-    <!-- ここを「ロビーに戻る」に変更 -->
     <button class="btn" onclick="returnToLobby()" style="margin-top: 16px;">🏠 ロビーに戻って次の試合を待つ</button>
   </div>
 
   <!-- 6. ホスト（教員）管理画面 -->
   <div id="hostScreen" class="screen">
     <h2>教員用管理画面 (ホスト)</h2>
-    <p style="text-align:center;">ルームID: <strong id="hostDisplayRoomId">math2026</strong> | 参加者: <strong id="hostParticipantCount">0</strong> 人</p>
+    <p style="text-align:center;">
+      ルームID: <strong id="hostDisplayRoomId">math2026</strong> | 参加者: <strong id="hostParticipantCount">0</strong> 人<br>
+      <span style="font-size:14px; color:#2e7d32; font-weight:bold;">対戦完了: <span id="hostFinishedCount">0</span> / <span id="hostTotalCount">0</span> 人</span>
+    </p>
 
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
       <button class="btn btn-solo" onclick="assignTeamsAuto()">🎲 チーム自動分け (1チーム5~6人)</button>
@@ -248,9 +253,9 @@
       <tbody id="hostTeamRankingBody"></tbody>
     </table>
 
-    <h3 style="margin-top:16px;">👤 リアルタイム個人順位</h3>
+    <h3 style="margin-top:16px;">👤 リアルタイム個人順位 & 進捗</h3>
     <table class="ranking-table">
-      <thead><tr><th>順位</th><th>名前</th><th>クラス</th><th>チーム</th><th>スコア</th></tr></thead>
+      <thead><tr><th>順位</th><th>名前</th><th>チーム</th><th>スコア</th><th>状態</th></tr></thead>
       <tbody id="hostRankingBody"></tbody>
     </table>
 
@@ -291,6 +296,7 @@
   let studentConns = [];
   let isHost = false;
   let isSoloMode = false;
+  let retryTimer = null;
 
   let myName = "";
   let myClass = "";
@@ -416,13 +422,12 @@
     updateMathJax();
   }
 
-  // 完全切断してトップ画面へ戻る
   function resetToTop() {
+    if (retryTimer) clearTimeout(retryTimer);
     if (peer) { peer.destroy(); peer = null; }
     window.location.href = window.location.pathname;
   }
 
-  // 通信接続を保持したまま対戦待機ロビーに戻る
   function returnToLobby() {
     if (isSoloMode) {
       resetToTop();
@@ -463,15 +468,27 @@
     peer = new Peer("host-" + myRoomId);
 
     peer.on('connection', (conn) => {
+      // 重複接続の除外
+      studentConns = studentConns.filter(c => c.peer !== conn.peer);
       studentConns.push(conn);
 
       conn.on('data', (data) => {
         if (data.type === 'join') {
-          leaderboard.push({ id: conn.peer, name: data.name, class: data.class, team: "未割り当て", score: 0 });
+          let user = leaderboard.find(u => u.id === conn.peer);
+          if (!user) {
+            leaderboard.push({ id: conn.peer, name: data.name, class: data.class, team: "未割り当て", score: 0, isFinished: false, correctCount: 0 });
+          } else {
+            user.name = data.name;
+            user.class = data.class;
+          }
           updateHostUI();
         } else if (data.type === 'score_update') {
           let user = leaderboard.find(u => u.id === conn.peer);
-          if (user) user.score = data.score;
+          if (user) {
+            user.score = data.score;
+            if (data.isFinished !== undefined) user.isFinished = data.isFinished;
+            if (data.correctCount !== undefined) user.correctCount = data.correctCount;
+          }
           updateHostUI();
           broadcastRanking();
         }
@@ -514,13 +531,21 @@
 
   function updateHostUI() {
     document.getElementById('hostParticipantCount').innerText = leaderboard.length;
-    renderIndividualRankingTable('hostRankingBody', leaderboard);
+    
+    const finishedUsers = leaderboard.filter(u => u.isFinished);
+    document.getElementById('hostFinishedCount').innerText = finishedUsers.length;
+    document.getElementById('hostTotalCount').innerText = leaderboard.length;
+
+    renderHostIndividualRankingTable('hostRankingBody', leaderboard);
     renderTeamRankingTable('hostTeamRankingBody', leaderboard);
   }
 
   function startHostGame() {
-    // スコアリセット
-    leaderboard.forEach(u => u.score = 0);
+    leaderboard.forEach(u => {
+      u.score = 0;
+      u.isFinished = false;
+      u.correctCount = 0;
+    });
     updateHostUI();
 
     const randomizedQuestions = generateRandomizedQuestions(questions);
@@ -535,7 +560,21 @@
     });
   }
 
-  // --- 生徒 処理 ---
+  function renderHostIndividualRankingTable(tbodyId, dataList) {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    let sorted = [...dataList].sort((a, b) => b.score - a.score);
+    sorted.forEach((item, index) => {
+      const statusHtml = item.isFinished 
+        ? `<span class="status-badge status-finished">完了 (${item.correctCount}/${questions.length})</span>`
+        : `<span class="status-badge status-playing">解答中…</span>`;
+
+      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.team || '未定'}</td><td>${item.score}点</td><td>${statusHtml}</td></tr>`;
+    });
+  }
+
+  // --- 生徒 処理 (再接続機能付き) ---
   function joinLobby() {
     myName = document.getElementById('playerName').value.trim();
     myClass = document.getElementById('classSelect').value;
@@ -551,28 +590,50 @@
     peer = new Peer();
 
     peer.on('open', () => {
-      hostConn = peer.connect("host-" + myRoomId);
-
-      hostConn.on('open', () => {
-        document.getElementById('studentStatus').innerText = "接続成功！教員の開始を待っています";
-        document.getElementById('studentStatus').style.color = "green";
-        hostConn.send({ type: 'join', name: myName, class: myClass });
-      });
-
-      hostConn.on('data', (data) => {
-        if (data.type === 'team_assigned') {
-          myTeam = data.team;
-          document.getElementById('myTeamDisplay').innerText = myTeam;
-          document.getElementById('quizTeamDisplay').innerText = myTeam;
-        } else if (data.type === 'start_game') {
-          questions = data.questions;
-          startQuizGame();
-        } else if (data.type === 'ranking_update') {
-          renderIndividualRankingTable('rankingBody', data.leaderboard);
-          renderTeamRankingTable('teamRankingBody', data.leaderboard);
-        }
-      });
+      tryConnectHost();
     });
+  }
+
+  function tryConnectHost() {
+    if (!peer || peer.destroyed) return;
+
+    document.getElementById('studentStatus').innerText = "教員の準備を待っています... (再接続中)";
+    document.getElementById('studentStatus').style.color = "orange";
+
+    if (hostConn) hostConn.close();
+    hostConn = peer.connect("host-" + myRoomId);
+
+    let isConnected = false;
+
+    hostConn.on('open', () => {
+      isConnected = true;
+      if (retryTimer) clearTimeout(retryTimer);
+
+      document.getElementById('studentStatus').innerText = "接続成功！教員の開始を待っています";
+      document.getElementById('studentStatus').style.color = "green";
+      hostConn.send({ type: 'join', name: myName, class: myClass });
+    });
+
+    hostConn.on('data', (data) => {
+      if (data.type === 'team_assigned') {
+        myTeam = data.team;
+        document.getElementById('myTeamDisplay').innerText = myTeam;
+        document.getElementById('quizTeamDisplay').innerText = myTeam;
+      } else if (data.type === 'start_game') {
+        questions = data.questions;
+        startQuizGame();
+      } else if (data.type === 'ranking_update') {
+        renderIndividualRankingTable('rankingBody', data.leaderboard);
+        renderTeamRankingTable('teamRankingBody', data.leaderboard);
+      }
+    });
+
+    // 教員が未起動などで接続できなかった場合、2秒後に自動リトライ
+    setTimeout(() => {
+      if (!isConnected && document.getElementById('lobbyScreen').classList.contains('active')) {
+        retryTimer = setTimeout(tryConnectHost, 2000);
+      }
+    }, 1500);
   }
 
   // --- クイズ処理 ---
@@ -687,8 +748,15 @@
       }
     }
 
+    const isLastQuestion = (currentQuestionIndex + 1 >= questions.length);
+
     if (hostConn && !isSoloMode) {
-      hostConn.send({ type: 'score_update', score: myScore });
+      hostConn.send({
+        type: 'score_update',
+        score: myScore,
+        isFinished: isLastQuestion,
+        correctCount: correctAnswersCount
+      });
     }
 
     setTimeout(() => {
