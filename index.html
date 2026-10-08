@@ -218,7 +218,9 @@
       <thead><tr><th>順位</th><th>名前</th><th>チーム</th><th>スコア</th></tr></thead>
       <tbody id="rankingBody"></tbody>
     </table>
-    <button class="btn btn-secondary" onclick="resetToTop()" style="margin-top: 16px;">トップに戻る</button>
+
+    <!-- ここを「ロビーに戻る」に変更 -->
+    <button class="btn" onclick="returnToLobby()" style="margin-top: 16px;">🏠 ロビーに戻って次の試合を待つ</button>
   </div>
 
   <!-- 6. ホスト（教員）管理画面 -->
@@ -414,9 +416,19 @@
     updateMathJax();
   }
 
+  // 完全切断してトップ画面へ戻る
   function resetToTop() {
     if (peer) { peer.destroy(); peer = null; }
     window.location.href = window.location.pathname;
+  }
+
+  // 通信接続を保持したまま対戦待機ロビーに戻る
+  function returnToLobby() {
+    if (isSoloMode) {
+      resetToTop();
+    } else {
+      navigateTo('lobbyScreen');
+    }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
@@ -473,7 +485,6 @@
     });
   }
 
-  // 1チーム5〜6人になるようチーム数を自動計算・割り振り
   function assignTeamsAuto() {
     const total = leaderboard.length;
     if (total === 0) {
@@ -481,18 +492,15 @@
       return;
     }
 
-    // 1チーム平均5.5人で計算（5〜6人規模）
     const numTeams = Math.max(1, Math.round(total / 5.5));
     const teamNames = ["チームA", "チームB", "チームC", "チームD", "チームE", "チームF", "チームG", "チームH"];
 
-    // ランダムシャッフルして順番にチーム割り当て
     let shuffledIndices = shuffleArray([...Array(total).keys()]);
     shuffledIndices.forEach((studentIdx, rankIndex) => {
       let teamIdx = rankIndex % numTeams;
       leaderboard[studentIdx].team = teamNames[teamIdx] || `チーム${teamIdx + 1}`;
     });
 
-    // 各生徒へ通知
     studentConns.forEach(conn => {
       let user = leaderboard.find(u => u.id === conn.peer);
       if (user) {
@@ -501,7 +509,7 @@
     });
 
     updateHostUI();
-    alert(`全${total}名を${numTeams}つのチームに分けました！(1チーム約${Math.round(total/numTeams)}名)`);
+    alert(`全${total}名を${numTeams}つのチームに分けました！`);
   }
 
   function updateHostUI() {
@@ -511,6 +519,10 @@
   }
 
   function startHostGame() {
+    // スコアリセット
+    leaderboard.forEach(u => u.score = 0);
+    updateHostUI();
+
     const randomizedQuestions = generateRandomizedQuestions(questions);
     studentConns.forEach(conn => {
       conn.send({ type: 'start_game', questions: randomizedQuestions });
@@ -704,7 +716,6 @@
     }
   }
 
-  // 個人順位テーブルの描写
   function renderIndividualRankingTable(tbodyId, dataList) {
     const tbody = document.getElementById(tbodyId);
     if (!tbody) return;
@@ -715,13 +726,11 @@
     });
   }
 
-  // チーム順位テーブル（平均点順）の描写
   function renderTeamRankingTable(tbodyId, dataList) {
     const tbody = document.getElementById(tbodyId);
     if (!tbody) return;
     tbody.innerHTML = '';
 
-    // チームごとにスコアと人数を集計
     const teamStats = {};
     dataList.forEach(item => {
       const tName = item.team || "未割り当て";
