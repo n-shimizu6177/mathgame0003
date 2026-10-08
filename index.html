@@ -61,12 +61,35 @@
     .btn-host { background-color: #ff9800; }
     .btn-danger { background-color: #f44336; }
 
-    .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+    /* 選択肢グリッドとボタンのスタイル */
+    .options-grid { 
+      display: grid; 
+      grid-template-columns: 1fr 1fr; 
+      gap: 12px; 
+      margin-top: 16px; 
+    }
+    
     .option-btn {
-      padding: 14px; font-size: 16px; font-weight: bold; background-color: #f0f0f0;
-      border: 2px solid #ccc; border-radius: 8px; cursor: pointer; text-align: center;
+      padding: 20px 12px;           /* パディングを広げてボタン自体を大きく */
+      min-height: 80px;             /* ボタンの最小高さを確保 */
+      font-size: 20px;              /* テキストのベースサイズを拡大 */
+      font-weight: bold; 
+      background-color: #f0f0f0;
+      border: 2px solid #ccc; 
+      border-radius: 10px; 
+      cursor: pointer; 
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       transition: background-color 0.2s, border-color 0.2s;
     }
+    
+    /* 選択肢内のMathJax（分数など）が小さく縮小されるのを防ぐ設定 */
+    .option-btn mjx-container {
+      font-size: 115% !important;  /* 数式表示を通常より拡大 */
+    }
+
     .option-btn:hover { background-color: #e0e0e0; }
     .option-btn.correct { background-color: #4caf50 !important; color: white !important; border-color: #388e3c !important; }
     .option-btn.wrong { background-color: #f44336 !important; color: white !important; border-color: #d32f2f !important; }
