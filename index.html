@@ -356,4 +356,548 @@
     },
     {
       q: "【第10問】(ベクトル)<br>2つのベクトル \\(\\vec{a} = (3, 1)\\), \\(\\vec{b} = (2, -4)\\) の内積 \\(\\vec{a} \\cdot \\vec{b}\\) を求めよ。",
-      options: ["\\(2\\)", "\\(10\\)", "\\(-2
+      options: ["\\(2\\)", "\\(10\\)", "\\(-2\\)", "\\(14\\)"],
+      answer: 0
+    }
+  ];
+
+  let questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
+
+  function saveToLocalStorage() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(questions)); } catch (e) {}
+  }
+
+  function loadFromLocalStorage() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) questions = parsed;
+      }
+    } catch (e) {}
+  }
+
+  function resetDefaultQuestions() {
+    if (confirm("問題を初期状態にリセットしますか？")) {
+      questions = JSON.parse(JSON.stringify(DEFAULT_QUESTIONS));
+      localStorage.removeItem(STORAGE_KEY);
+      renderEditorFields();
+      alert("初期状態にリセットしました。");
+    }
+  }
+
+  function shuffleArray(array) {
+    let clone = JSON.parse(JSON.stringify(array));
+    for (let i = clone.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [clone[i], clone[j]] = [clone[j], clone[i]];
+    }
+    return clone;
+  }
+
+  function generateRandomizedQuestions(baseQuestions) {
+    let shuffledQ = shuffleArray(baseQuestions);
+    shuffledQ.forEach(q => {
+      let correctOptionText = q.options[q.answer];
+      q.options = shuffleArray(q.options);
+      q.answer = q.options.indexOf(correctOptionText);
+    });
+    return shuffledQ;
+  }
+
+  function navigateTo(screenId) {
+    if (timerInterval) clearInterval(timerInterval);
+    const screens = document.querySelectorAll('.screen');
+    screens.forEach(s => s.classList.remove('active'));
+    const target = document.getElementById(screenId);
+    if (target) target.classList.add('active');
+    updateMathJax();
+  }
+
+  function resetToTop() {
+    if (peer) { peer.destroy(); peer = null; }
+    window.location.href = window.location.pathname;
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    loadFromLocalStorage();
+    navigateTo('entryScreen');
+  });
+
+  function updateMathJax() {
+    if (window.MathJax && window.MathJax.typesetPromise) {
+      window.MathJax.typesetPromise().catch(err => console.log(err));
+    }
+  }
+
+  // --- 教員 (ホスト) 処理 ---
+  function verifyHostPassword() {
+    const pass = document.getElementById('hostPasswordInput').value;
+    if (pass === HOST_PASSWORD) {
+      const roomIdInput = document.getElementById('roomId');
+      myRoomId = (roomIdInput && roomIdInput.value) ? roomIdInput.value.trim() : "math2026";
+      document.getElementById('hostDisplayRoomId').innerText = myRoomId;
+      document.getElementById('authErrorMessage').style.display = 'none';
+      isHost = true;
+      initHostPeer();
+      navigateTo('hostScreen');
+    } else {
+      document.getElementById('authErrorMessage').style.display = 'block';
+    }
+  }
+
+  function initHostPeer() {
+    if (peer) peer.destroy();
+    peer = new Peer("host-" + myRoomId);
+
+    peer.on('connection', (conn) => {
+      studentConns.push(conn);
+
+      conn.on('data', (data) => {
+        if (data.type === 'join') {
+          leaderboard.push({ id: conn.peer, name: data.name, class: data.class, team: "未割り当て", score: 0 });
+          updateHostUI();
+        } else if (data.type === 'score_update') {
+          let user = leaderboard.find(u => u.id === conn.peer);
+          if (user) user.score = data.score;
+          updateHostUI();
+          broadcastRanking();
+        }
+      });
+
+      conn.on('close', () => {
+        studentConns = studentConns.filter(c => c !== conn);
+        leaderboard = leaderboard.filter(u => u.id !== conn.peer);
+        updateHostUI();
+      });
+    });
+  }
+
+  // 1チーム5〜6人になるようチーム数を自動計算・割り振り
+  function assignTeamsAuto() {
+    const total = leaderboard.length;
+    if (total === 0) {
+      alert("参加者がいません。");
+      return;
+    }
+
+    // 1チーム平均5.5人で計算（5〜6人規模）
+    const numTeams = Math.max(1, Math.round(total / 5.5));
+    const teamNames = ["チームA", "チームB", "チームC", "チームD", "チームE", "チームF", "チームG", "チームH"];
+
+    // ランダムシャッフルして順番にチーム割り当て
+    let shuffledIndices = shuffleArray([...Array(total).keys()]);
+    shuffledIndices.forEach((studentIdx, rankIndex) => {
+      let teamIdx = rankIndex % numTeams;
+      leaderboard[studentIdx].team = teamNames[teamIdx] || `チーム${teamIdx + 1}`;
+    });
+
+    // 各生徒へ通知
+    studentConns.forEach(conn => {
+      let user = leaderboard.find(u => u.id === conn.peer);
+      if (user) {
+        conn.send({ type: 'team_assigned', team: user.team });
+      }
+    });
+
+    updateHostUI();
+    alert(`全${total}名を${numTeams}つのチームに分けました！(1チーム約${Math.round(total/numTeams)}名)`);
+  }
+
+  function updateHostUI() {
+    document.getElementById('hostParticipantCount').innerText = leaderboard.length;
+    renderIndividualRankingTable('hostRankingBody', leaderboard);
+    renderTeamRankingTable('hostTeamRankingBody', leaderboard);
+  }
+
+  function startHostGame() {
+    const randomizedQuestions = generateRandomizedQuestions(questions);
+    studentConns.forEach(conn => {
+      conn.send({ type: 'start_game', questions: randomizedQuestions });
+    });
+  }
+
+  function broadcastRanking() {
+    studentConns.forEach(conn => {
+      conn.send({ type: 'ranking_update', leaderboard: leaderboard });
+    });
+  }
+
+  // --- 生徒 処理 ---
+  function joinLobby() {
+    myName = document.getElementById('playerName').value.trim();
+    myClass = document.getElementById('classSelect').value;
+    myRoomId = document.getElementById('roomId').value.trim();
+
+    if (!myName || !myRoomId) {
+      alert("名前とルームIDを入力してください。");
+      return;
+    }
+
+    navigateTo('lobbyScreen');
+    if (peer) peer.destroy();
+    peer = new Peer();
+
+    peer.on('open', () => {
+      hostConn = peer.connect("host-" + myRoomId);
+
+      hostConn.on('open', () => {
+        document.getElementById('studentStatus').innerText = "接続成功！教員の開始を待っています";
+        document.getElementById('studentStatus').style.color = "green";
+        hostConn.send({ type: 'join', name: myName, class: myClass });
+      });
+
+      hostConn.on('data', (data) => {
+        if (data.type === 'team_assigned') {
+          myTeam = data.team;
+          document.getElementById('myTeamDisplay').innerText = myTeam;
+          document.getElementById('quizTeamDisplay').innerText = myTeam;
+        } else if (data.type === 'start_game') {
+          questions = data.questions;
+          startQuizGame();
+        } else if (data.type === 'ranking_update') {
+          renderIndividualRankingTable('rankingBody', data.leaderboard);
+          renderTeamRankingTable('teamRankingBody', data.leaderboard);
+        }
+      });
+    });
+  }
+
+  // --- クイズ処理 ---
+  function startSoloMode() {
+    isSoloMode = true;
+    myName = document.getElementById('playerName').value.trim() || "ゲスト";
+    myClass = document.getElementById('classSelect').value;
+    myTeam = "個人";
+    questions = generateRandomizedQuestions(questions);
+    startQuizGame();
+  }
+
+  function startQuizGame() {
+    currentQuestionIndex = 0;
+    correctAnswersCount = 0;
+    baseScoreTotal = 0;
+    timeBonusTotal = 0;
+    myScore = 0;
+    
+    navigateTo('quizScreen');
+    renderQuestion();
+  }
+
+  function renderQuestion() {
+    if (timerInterval) clearInterval(timerInterval);
+    isAnsweringLocked = false;
+
+    const banner = document.getElementById('feedbackBanner');
+    banner.className = 'feedback-banner';
+    banner.innerText = '';
+
+    const qData = questions[currentQuestionIndex];
+    document.getElementById('questionProgress').innerText = `第 ${currentQuestionIndex + 1} / ${questions.length} 問`;
+    document.getElementById('questionText').innerHTML = qData.q;
+
+    const container = document.getElementById('optionsContainer');
+    container.innerHTML = '';
+
+    qData.options.forEach((optText, index) => {
+      const btn = document.createElement('button');
+      btn.className = 'option-btn';
+      btn.id = `opt-btn-${index}`;
+      btn.innerHTML = optText;
+      btn.onclick = () => selectAnswer(index);
+      container.appendChild(btn);
+    });
+
+    updateMathJax();
+
+    timeLeft = QUESTION_TIME_LIMIT;
+    questionStartTime = Date.now();
+    updateTimerUI();
+
+    timerInterval = setInterval(() => {
+      const elapsed = (Date.now() - questionStartTime) / 1000;
+      timeLeft = Math.max(0, QUESTION_TIME_LIMIT - elapsed);
+      updateTimerUI();
+
+      if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        selectAnswer(-1);
+      }
+    }, 100);
+  }
+
+  function updateTimerUI() {
+    document.getElementById('timerText').innerText = `残り時間: ${timeLeft.toFixed(1)}秒`;
+    const percentage = (timeLeft / QUESTION_TIME_LIMIT) * 100;
+    const bar = document.getElementById('timerBar');
+    bar.style.width = percentage + "%";
+
+    if (percentage < 30) {
+      bar.style.backgroundColor = "#f44336";
+    } else {
+      bar.style.backgroundColor = "#ff9800";
+    }
+  }
+
+  function selectAnswer(selectedIndex) {
+    if (isAnsweringLocked) return;
+    isAnsweringLocked = true;
+    if (timerInterval) clearInterval(timerInterval);
+
+    const qData = questions[currentQuestionIndex];
+    const banner = document.getElementById('feedbackBanner');
+    const correctBtn = document.getElementById(`opt-btn-${qData.answer}`);
+
+    let timeBonus = 0;
+
+    if (selectedIndex === qData.answer) {
+      correctAnswersCount++;
+      baseScoreTotal += 100;
+      timeBonus = Math.round(timeLeft * 10);
+      timeBonusTotal += timeBonus;
+      myScore += (100 + timeBonus);
+
+      if (correctBtn) correctBtn.classList.add('correct');
+      banner.className = 'feedback-banner correct';
+      banner.innerHTML = `⭕ 正解！ +100pt <span style="font-size:13px; font-weight:normal;">(タイムボーナス: +${timeBonus}pt)</span>`;
+    } else {
+      if (selectedIndex >= 0) {
+        const selectedBtn = document.getElementById(`opt-btn-${selectedIndex}`);
+        if (selectedBtn) selectedBtn.classList.add('wrong');
+      }
+      if (correctBtn) correctBtn.classList.add('correct');
+
+      banner.className = 'feedback-banner wrong';
+      if (selectedIndex === -1) {
+        banner.innerText = '⏰ 時間切れ！正解は緑の選択肢です';
+      } else {
+        banner.innerText = '❌ 不正解... 正解は緑の選択肢です';
+      }
+    }
+
+    if (hostConn && !isSoloMode) {
+      hostConn.send({ type: 'score_update', score: myScore });
+    }
+
+    setTimeout(() => {
+      currentQuestionIndex++;
+      if (currentQuestionIndex < questions.length) {
+        renderQuestion();
+      } else {
+        finishGame();
+      }
+    }, 1500);
+  }
+
+  function finishGame() {
+    navigateTo('resultScreen');
+
+    document.getElementById('breakdownTeam').innerText = myTeam;
+    document.getElementById('breakdownCorrectCount').innerText = `${correctAnswersCount} / ${questions.length} 問`;
+    document.getElementById('breakdownBaseScore').innerText = `${baseScoreTotal} pt`;
+    document.getElementById('breakdownTimeBonus').innerText = `+${timeBonusTotal} pt`;
+    document.getElementById('breakdownTotalScore').innerText = `${myScore} pt`;
+
+    if (isSoloMode) {
+      renderIndividualRankingTable('rankingBody', [{ name: myName, class: myClass, team: myTeam, score: myScore }]);
+      renderTeamRankingTable('teamRankingBody', [{ name: myName, class: myClass, team: myTeam, score: myScore }]);
+    }
+  }
+
+  // 個人順位テーブルの描写
+  function renderIndividualRankingTable(tbodyId, dataList) {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    let sorted = [...dataList].sort((a, b) => b.score - a.score);
+    sorted.forEach((item, index) => {
+      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.team || '未定'}</td><td>${item.score}点</td></tr>`;
+    });
+  }
+
+  // チーム順位テーブル（平均点順）の描写
+  function renderTeamRankingTable(tbodyId, dataList) {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    // チームごとにスコアと人数を集計
+    const teamStats = {};
+    dataList.forEach(item => {
+      const tName = item.team || "未割り当て";
+      if (!teamStats[tName]) teamStats[tName] = { totalScore: 0, count: 0 };
+      teamStats[tName].totalScore += item.score;
+      teamStats[tName].count += 1;
+    });
+
+    const teamList = Object.keys(teamStats).map(tName => ({
+      name: tName,
+      count: teamStats[tName].count,
+      avgScore: Math.round(teamStats[tName].totalScore / teamStats[tName].count)
+    }));
+
+    teamList.sort((a, b) => b.avgScore - a.avgScore);
+
+    teamList.forEach((team, index) => {
+      tbody.innerHTML += `<tr><td>${index + 1}</td><td><strong>${team.name}</strong></td><td>${team.count}名</td><td>${team.avgScore}点</td></tr>`;
+    });
+  }
+
+  // --- 問題編集 & Excelコピペ取り込み ---
+  function toggleEditor(show) {
+    if (show) {
+      renderEditorFields();
+      navigateTo('editorScreen');
+    } else {
+      navigateTo('hostScreen');
+    }
+  }
+
+  function renderEditorFields() {
+    const container = document.getElementById('questionsEditorContainer');
+    container.innerHTML = '';
+
+    questions.forEach((q, idx) => {
+      const card = document.createElement('div');
+      card.className = 'q-edit-card';
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong>問題 ${idx + 1}</strong>
+          <button class="btn btn-danger" style="width:auto; padding:4px 8px; font-size:12px;" onclick="removeQuestion(${idx})">削除</button>
+        </div>
+        <label style="margin-top:4px;">問題文</label>
+        <textarea id="edit-q-${idx}">${q.q}</textarea>
+        <label>選択肢 (4つ)</label>
+        <div class="q-edit-options">
+          <input type="text" id="edit-opt-${idx}-0" value="${q.options[0] || ''}">
+          <input type="text" id="edit-opt-${idx}-1" value="${q.options[1] || ''}">
+          <input type="text" id="edit-opt-${idx}-2" value="${q.options[2] || ''}">
+          <input type="text" id="edit-opt-${idx}-3" value="${q.options[3] || ''}">
+        </div>
+        <label style="margin-top:6px;">正解の選択肢</label>
+        <select id="edit-ans-${idx}">
+          <option value="0" ${q.answer === 0 ? 'selected' : ''}>選択肢 1</option>
+          <option value="1" ${q.answer === 1 ? 'selected' : ''}>選択肢 2</option>
+          <option value="2" ${q.answer === 2 ? 'selected' : ''}>選択肢 3</option>
+          <option value="3" ${q.answer === 3 ? 'selected' : ''}>選択肢 4</option>
+        </select>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  function importFromExcelPaste() {
+    const pasteText = document.getElementById('excelPasteArea').value.trim();
+    if (!pasteText) {
+      alert("貼り付けエリアにテキストを入力してください。");
+      return;
+    }
+
+    const lines = pasteText.split('\n');
+    const importedQuestions = [];
+
+    lines.forEach((line) => {
+      let trimmedLine = line.trim();
+      if (!trimmedLine) return;
+
+      let cols = trimmedLine.split('\t');
+      if (cols.length < 6) cols = trimmedLine.split(',');
+      if (cols.length < 6) cols = trimmedLine.split('|');
+
+      if (cols.length >= 6) {
+        let qText = cols[0].trim();
+        let opt1 = cols[1].trim();
+        let opt2 = cols[2].trim();
+        let opt3 = cols[3].trim();
+        let opt4 = cols[4].trim();
+        let ansRaw = cols[5].trim();
+
+        if (qText.includes("問題文") || ansRaw.includes("正解")) return;
+
+        let ansIndex = 0;
+        let parsedAns = parseInt(ansRaw, 10);
+        if (!isNaN(parsedAns)) {
+          ansIndex = (parsedAns >= 1 && parsedAns <= 4) ? parsedAns - 1 : parsedAns;
+        }
+
+        importedQuestions.push({
+          q: qText,
+          options: [opt1, opt2, opt3, opt4],
+          answer: Math.max(0, Math.min(3, ansIndex))
+        });
+      }
+    });
+
+    if (importedQuestions.length > 0) {
+      questions = importedQuestions;
+      saveToLocalStorage();
+      renderEditorFields();
+      document.getElementById('excelPasteArea').value = '';
+      alert(`${importedQuestions.length}件の問題を取り込み、ブラウザに保存しました！`);
+    } else {
+      alert("フォーマットを読み取れませんでした。[問題文] [選択肢1] [選択肢2] [選択肢3] [選択肢4] [正解(1~4)] の6列があるか確認してください。");
+    }
+  }
+
+  function addNewQuestionField() {
+    questions.push({ q: "新しい問題文", options: ["1", "2", "3", "4"], answer: 0 });
+    renderEditorFields();
+  }
+
+  function removeQuestion(idx) {
+    questions.splice(idx, 1);
+    renderEditorFields();
+  }
+
+  function saveEditedQuestions() {
+    const newQuestions = [];
+    for (let idx = 0; idx < questions.length; idx++) {
+      newQuestions.push({
+        q: document.getElementById(`edit-q-${idx}`).value,
+        options: [
+          document.getElementById(`edit-opt-${idx}-0`).value,
+          document.getElementById(`edit-opt-${idx}-1`).value,
+          document.getElementById(`edit-opt-${idx}-2`).value,
+          document.getElementById(`edit-opt-${idx}-3`).value
+        ],
+        answer: parseInt(document.getElementById(`edit-ans-${idx}`).value, 10)
+      });
+    }
+    questions = newQuestions;
+    saveToLocalStorage();
+    alert("問題セットを保存しました。");
+    navigateTo('hostScreen');
+  }
+
+  function exportQuestionsJSON() {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(questions, null, 2));
+    const dlAnchor = document.createElement('a');
+    dlAnchor.setAttribute("href", dataStr);
+    dlAnchor.setAttribute("download", "questions.json");
+    document.body.appendChild(dlAnchor);
+    dlAnchor.click();
+    dlAnchor.remove();
+  }
+
+  function importQuestionsJSON(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const imported = JSON.parse(e.target.result);
+        if (Array.isArray(imported)) {
+          questions = imported;
+          saveToLocalStorage();
+          alert("問題セットを正常に読み込みました。");
+        }
+      } catch (err) {
+        alert("ファイルの解析に失敗しました。");
+      }
+    };
+    reader.readAsText(file);
+  }
+</script>
+
+</body>
+</html>
