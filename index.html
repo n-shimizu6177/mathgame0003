@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2年生一斉！数学対戦アプリ (PeerJS版)</title>
+
+  <!-- MathJax -->
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script" async></script>
+
+  <!-- PeerJS SDK (Firebase不要の通信ライブラリ) -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+  <style>
+    :root {
+      --primary-color: #3f51b5;
+      --bg-color: #f9f9f9;
+      --card-bg: #ffffff;
+      --text-color: #333333;
+    }
+
+    body {
+      font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      margin: 0;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 800px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      box-sizing: border-box;
+    }
+
+    h1, h2, h3 { text-align: center; color: var(--primary-color); margin-top: 0; }
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .input-group { margin-bottom: 14px; }
+
+    label { display: block; margin-bottom: 4px; font-weight: bold; font-size: 14px; }
+    input[type="text"], input[type="password"], select, textarea {
+      width: 100%; padding: 10px; font-size: 15px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box;
+    }
+    textarea { resize: vertical; min-height: 60px; }
+
+    .btn {
+      width: 100%; padding: 12px; font-size: 16px; font-weight: bold; color: #fff;
+      background-color: var(--primary-color); border: none; border-radius: 6px; cursor: pointer; margin-top: 8px; box-sizing: border-box;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn-secondary { background-color: #757575; }
+    .btn-solo { background-color: #4caf50; }
+    .btn-host { background-color: #ff9800; }
+    .btn-danger { background-color: #f44336; }
+
+    .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+    .option-btn {
+      padding: 14px; font-size: 16px; font-weight: bold; background-color: #f0f0f0;
+      border: 2px solid #ccc; border-radius: 8px; cursor: pointer; text-align: center;
+    }
+    .option-btn:hover { background-color: #e0e0e0; }
+
+    .question-box {
+      background-color: #f0f4f8; border-left: 5px solid var(--primary-color);
+      padding: 14px; font-size: 17px; margin-bottom: 16px; min-height: 60px;
+    }
+
+    .ranking-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    .ranking-table th, .ranking-table td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 14px; }
+    .ranking-table th { background-color: var(--primary-color); color: white; }
+
+    .q-edit-card { border: 1px solid #ddd; background: #fafafa; padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+    .q-edit-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+    .error-msg { color: red; font-size: 13px; margin-top: 6px; display: none; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- 1. エントリー画面 -->
+  <div id="entryScreen" class="screen active">
+    <h1>2年生一斉！数学対戦</h1>
+    
+    <div class="input-group">
+      <label for="playerName">名前</label>
+      <input type="text" id="playerName" placeholder="例：山田太郎">
+    </div>
+
+    <div class="input-group">
+      <label for="classSelect">クラス</label>
+      <select id="classSelect">
+        <option value="1組">1組</option><option value="2組">2組</option>
+        <option value="3組">3組</option><option value="4組">4組</option>
+        <option value="5組">5組</option><option value="6組">6組</option><option value="7組">7組</option>
+      </select>
+    </div>
+
+    <div class="input-group">
+      <label for="roomId">ルームID（教員が指定したID）</label>
+      <input type="text" id="roomId" value="math2026">
+    </div>
+
+    <button class="btn" onclick="joinLobby()">対戦ロビーに参加する</button>
+    <button class="btn btn-solo" onclick="startSoloMode()">一人で練習する (ソロ)</button>
+    <hr style="margin: 16px 0;">
+    <button class="btn btn-host" onclick="showScreen('hostAuthScreen')">教員用管理画面へ</button>
+  </div>
+
+  <!-- 2. 教員ログイン画面 -->
+  <div id="hostAuthScreen" class="screen">
+    <h2>教員用管理画面 ログイン</h2>
+    <div class="input-group">
+      <label for="hostPasswordInput">パスワードを入力してください</label>
+      <input type="password" id="hostPasswordInput" placeholder="パスワード">
+      <p id="authErrorMessage" class="error-msg">パスワードが間違っています</p>
+    </div>
+    <button class="btn" onclick="verifyHostPassword()">ログイン</button>
+    <button class="btn btn-secondary" onclick="showScreen('entryScreen')">戻る</button>
+  </div>
+
+  <!-- 3. 生徒ロビー画面 -->
+  <div id="lobbyScreen" class="screen">
+    <h2>対戦待機ロビー</h2>
+    <p style="text-align:center;">接続状況: <strong id="studentStatus" style="color:orange;">接続中...</strong></p>
+    <p style="text-align: center; color: #666; font-size:14px;">※ホスト（教員）が試合を開始するまでお待ちください。</p>
+    <button class="btn btn-secondary" onclick="location.reload()">退出して戻る</button>
+  </div>
+
+  <!-- 4. クイズ対戦画面 -->
+  <div id="quizScreen" class="screen">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom:8px;">
+      <span id="questionProgress" style="font-weight:bold;">第 1 / 3 問</span>
+    </div>
+    <div class="question-box" id="questionText">問題文</div>
+    <div class="options-grid" id="optionsContainer"></div>
+  </div>
+
+  <!-- 5. 結果画面 -->
+  <div id="resultScreen" class="screen">
+    <h2>対戦結果</h2>
+    <p style="text-align: center; font-size: 18px; font-weight:bold;" id="personalResult">あなたのスコア: 0 点</p>
+    <h3>結果順位</h3>
+    <table class="ranking-table">
+      <thead><tr><th>順位</th><th>名前</th><th>クラス</th><th>スコア</th></tr></thead>
+      <tbody id="rankingBody"></tbody>
+    </table>
+    <button class="btn btn-secondary" onclick="location.reload()" style="margin-top: 16px;">トップに戻る</button>
+  </div>
+
+  <!-- 6. ホスト（教員）管理画面 -->
+  <div id="hostScreen" class="screen">
+    <h2>教員用管理画面 (ホスト)</h2>
+    <p style="text-align:center;">ルームID: <strong id="hostDisplayRoomId">math2026</strong> | 参加者: <strong id="hostParticipantCount">0</strong> 人</p>
+
+    <button class="btn" onclick="startHostGame()" style="background-color: #2196F3; margin-bottom: 12px;">全員の対戦を一斉スタート</button>
+    
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+      <button class="btn btn-secondary" onclick="toggleEditor(true)">📝 問題編集</button>
+      <button class="btn btn-secondary" onclick="exportQuestionsJSON()">📥 JSON書き出し</button>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <input type="file" id="importFile" accept=".json" style="display:none" onchange="importQuestionsJSON(event)">
+      <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">📤 JSON読み込み</button>
+    </div>
+
+    <h3>リアルタイム順位</h3>
+    <table class="ranking-table">
+      <thead><tr><th>順位</th><th>名前</th><th>クラス</th><th>スコア</th></tr></thead>
+      <tbody id="hostRankingBody"></tbody>
+    </table>
+
+    <button class="btn btn-secondary" onclick="location.reload()" style="margin-top: 16px;">ログアウト・戻る</button>
+  </div>
+
+  <!-- 7. 問題編集画面 -->
+  <div id="editorScreen" class="screen">
+    <h2>問題セットの編集</h2>
+    <div id="questionsEditorContainer"></div>
+    <button class="btn btn-solo" onclick="addNewQuestionField()">＋ 新しい問題を追加</button>
+    <button class="btn" onclick="saveEditedQuestions()" style="margin-top: 8px;">保存して管理画面へ戻る</button>
+    <button class="btn btn-secondary" onclick="toggleEditor(false)">キャンセル</button>
+  </div>
+
+</div>
+
+<script>
+  const HOST_PASSWORD = "teacher2026";
+  let peer = null;
+  let hostConn = null; // 生徒用
+  let studentConns = []; // 教員用（接続中の生徒リスト）
+  let isHost = false;
+  let isSoloMode = false;
+
+  let myName = "";
+  let myClass = "";
+  let myRoomId = "";
+  let currentQuestionIndex = 0;
+  let myScore = 0;
+
+  // 教員側で保持する生徒スコア管理リスト
+  let leaderboard = [];
+
+  let questions = [
+    {
+      q: "【小問1】次の式を展開しなさい。<br>\\((2x - 3y)(4x + 5y)\\)",
+      options: ["\\(8x^2 - 2xy - 15y^2\\)", "\\(8x^2 + 2xy - 15y^2\\)", "\\(8x^2 - 22xy - 15y^2\\)", "\\(8x^2 - 15y^2\\)"],
+      answer: 0
+    },
+    {
+      q: "【小問2】2次不等式 \\(x^2 - 4x - 5 < 0\\) を解け。",
+      options: ["\\(-1 < x < 5\\)", "\\(x < -1, 5 < x\\)", "\\(-5 < x < 1\\)", "\\(x < -5, 1 < x\\)"],
+      answer: 0
+    },
+    {
+      q: "【小問3】\\(\\triangle ABC\\) において、\\(b=4, c=5, A=60^\\circ\\) のとき、辺 \\(a\\) の長さを求めよ。",
+      options: ["\\(\\sqrt{21}\\)", "\\(\\sqrt{41}\\)", "\\(21\\)", "\\(\\sqrt{61}\\)"],
+      answer: 0
+    }
+  ];
+
+  function updateMathJax() {
+    if (window.MathJax && window.MathJax.typesetPromise) {
+      window.MathJax.typesetPromise().catch(err => console.log(err));
+    }
+  }
+
+  function showScreen(screenId) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(screenId).classList.add('active');
+    updateMathJax();
+  }
+
+  // --- 教員 (ホスト) 処理 ---
+  function verifyHostPassword() {
+    const pass = document.getElementById('hostPasswordInput').value;
+    if (pass === HOST_PASSWORD) {
+      myRoomId = document.getElementById('roomId').value || "math2026";
+      document.getElementById('hostDisplayRoomId').innerText = myRoomId;
+      document.getElementById('authErrorMessage').style.display = 'none';
+      isHost = true;
+      initHostPeer();
+      showScreen('hostScreen');
+    } else {
+      document.getElementById('authErrorMessage').style.display = 'block';
+    }
+  }
+
+  function initHostPeer() {
+    // ルームIDをPeerIDとして割り当て
+    peer = new Peer("host-" + myRoomId);
+
+    peer.on('open', (id) => {
+      console.log("ホスト起動: " + id);
+    });
+
+    peer.on('connection', (conn) => {
+      studentConns.push(conn);
+
+      conn.on('data', (data) => {
+        if (data.type === 'join') {
+          // 生徒の参加情報を記録
+          leaderboard.push({ id: conn.peer, name: data.name, class: data.class, score: 0 });
+          updateHostUI();
+        } else if (data.type === 'score_update') {
+          // 生徒のスコア更新
+          let user = leaderboard.find(u => u.id === conn.peer);
+          if (user) user.score = data.score;
+          updateHostUI();
+          broadcastRanking(); // 全員に最新のランキングを共有
+        }
+      });
+
+      conn.on('close', () => {
+        studentConns = studentConns.filter(c => c !== conn);
+        leaderboard = leaderboard.filter(u => u.id !== conn.peer);
+        updateHostUI();
+      });
+    });
+
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        alert("すでに同じルームIDでホストが起動されています。");
+      }
+    });
+  }
+
+  function updateHostUI() {
+    document.getElementById('hostParticipantCount').innerText = leaderboard.length;
+    renderRankingTable('hostRankingBody', leaderboard);
+  }
+
+  function startHostGame() {
+    // 全生徒に「ゲーム開始指令」と「問題データ」を送信
+    studentConns.forEach(conn => {
+      conn.send({ type: 'start_game', questions: questions });
+    });
+  }
+
+  function broadcastRanking() {
+    // スコア順にソートして送信
+    let sorted = [...leaderboard].sort((a, b) => b.score - a.score);
+    studentConns.forEach(conn => {
+      conn.send({ type: 'ranking_update', ranking: sorted });
+    });
+  }
+
+  // --- 生徒 処理 ---
+  function joinLobby() {
+    myName = document.getElementById('playerName').value.trim();
+    myClass = document.getElementById('classSelect').value;
+    myRoomId = document.getElementById('roomId').value.trim();
+
+    if (!myName || !myRoomId) {
+      alert("名前とルームIDを入力してください。");
+      return;
+    }
+
+    showScreen('lobbyScreen');
+    peer = new Peer();
+
+    peer.on('open', () => {
+      // 教員（ホスト）に接続
+      hostConn = peer.connect("host-" + myRoomId);
+
+      hostConn.on('open', () => {
+        document.getElementById('studentStatus').innerText = "接続成功！教員の開始を待っています";
+        document.getElementById('studentStatus').style.color = "green";
+        // 参加者情報をホストに送信
+        hostConn.send({ type: 'join', name: myName, class: myClass });
+      });
+
+      hostConn.on('data', (data) => {
+        if (data.type === 'start_game') {
+          questions = data.questions;
+          startQuizGame();
+        } else if (data.type === 'ranking_update') {
+          renderRankingTable('rankingBody', data.ranking);
+        }
+      });
+
+      hostConn.on('error', () => {
+        alert("教員のルームが見つかりません。ルームIDを確認してください。");
+      });
+    });
+  }
+
+  // --- クイズ共通 処理 ---
+  function startSoloMode() {
+    isSoloMode = true;
+    myName = document.getElementById('playerName').value.trim() || "ゲスト";
+    myClass = document.getElementById('classSelect').value;
+    startQuizGame();
+  }
+
+  function startQuizGame() {
+    currentQuestionIndex = 0;
+    myScore = 0;
+    showScreen('quizScreen');
+    renderQuestion();
+  }
+
+  function renderQuestion() {
+    const qData = questions[currentQuestionIndex];
+    document.getElementById('questionProgress').innerText = `第 ${currentQuestionIndex + 1} / ${questions.length} 問`;
+    document.getElementById('questionText').innerHTML = qData.q;
+
+    const container = document.getElementById('optionsContainer');
+    container.innerHTML = '';
+
+    qData.options.forEach((optText, index) => {
+      const btn = document.createElement('button');
+      btn.className = 'option-btn';
+      btn.innerHTML = optText;
+      btn.onclick = () => selectAnswer(index);
+      container.appendChild(btn);
+    });
+
+    updateMathJax();
+  }
+
+  function selectAnswer(selectedIndex) {
+    const qData = questions[currentQuestionIndex];
+    if (selectedIndex === qData.answer) {
+      myScore += 10;
+    }
+
+    // 教員へスコアをリアルタイム送信
+    if (hostConn && !isSoloMode) {
+      hostConn.send({ type: 'score_update', score: myScore });
+    }
+
+    currentQuestionIndex++;
+    if (currentQuestionIndex < questions.length) {
+      renderQuestion();
+    } else {
+      finishGame();
+    }
+  }
+
+  function finishGame() {
+    showScreen('resultScreen');
+    document.getElementById('personalResult').innerText = `あなたのスコア: ${myScore} 点`;
+    if (isSoloMode) {
+      renderRankingTable('rankingBody', [{ name: myName, class: myClass, score: myScore }]);
+    }
+  }
+
+  function renderRankingTable(tbodyId, dataList) {
+    const tbody = document.getElementById(tbodyId);
+    tbody.innerHTML = '';
+    let sorted = [...dataList].sort((a, b) => b.score - a.score);
+    sorted.forEach((item, index) => {
+      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.class}</td><td>${item.score}</td></tr>`;
+    });
+  }
+
+  // --- 問題編集（教員用）---
+  function toggleEditor(show) {
+    if (show) {
+      renderEditorFields();
+      showScreen('editorScreen');
+    } else {
+      showScreen('hostScreen');
+    }
+  }
+
+  function renderEditorFields() {
+    const container = document.getElementById('questionsEditorContainer');
+    container.innerHTML = '';
+
+    questions.forEach((q, idx) => {
+      const card = document.createElement('div');
+      card.className = 'q-edit-card';
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong>問題 ${idx + 1}</strong>
+          <button class="btn btn-danger" style="width:auto; padding:4px 8px; font-size:12px;" onclick="removeQuestion(${idx})">削除</button>
+        </div>
+        <label style="margin-top:4px;">問題文</label>
+        <textarea id="edit-q-${idx}">${q.q}</textarea>
+        <label>選択肢 (4つ)</label>
+        <div class="q-edit-options">
+          <input type="text" id="edit-opt-${idx}-0" value="${q.options[0] || ''}">
+          <input type="text" id="edit-opt-${idx}-1" value="${q.options[1] || ''}">
+          <input type="text" id="edit-opt-${idx}-2" value="${q.options[2] || ''}">
+          <input type="text" id="edit-opt-${idx}-3" value="${q.options[3] || ''}">
+        </div>
+        <label style="margin-top:6px;">正解の選択肢</label>
+        <select id="edit-ans-${idx}">
+          <option value="0" ${q.answer === 0 ? 'selected' : ''}>選択肢 1</option>
+          <option value="1" ${q.answer === 1 ? 'selected' : ''}>選択肢 2</option>
+          <option value="2" ${q.answer === 2 ? 'selected' : ''}>選択肢 3</option>
+          <option value="3" ${q.answer === 3 ? 'selected' : ''}>選択肢 4</option>
+        </select>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  function addNewQuestionField() {
+    questions.push({ q: "新しい問題文", options: ["1", "2", "3", "4"], answer: 0 });
+    renderEditorFields();
+  }
+
+  function removeQuestion(idx) {
+    questions.splice(idx, 1);
+    renderEditorFields();
+  }
+
+  function saveEditedQuestions() {
+    const newQuestions = [];
+    for (let idx = 0; idx < questions.length; idx++) {
+      newQuestions.push({
+        q: document.getElementById(`edit-q-${idx}`).value,
+        options: [
+          document.getElementById(`edit-opt-${idx}-0`).value,
+          document.getElementById(`edit-opt-${idx}-1`).value,
+          document.getElementById(`edit-opt-${idx}-2`).value,
+          document.getElementById(`edit-opt-${idx}-3`).value
+        ],
+        answer: parseInt(document.getElementById(`edit-ans-${idx}`).value, 10)
+      });
+    }
+    questions = newQuestions;
+    alert("問題セットを保存しました。");
+    showScreen('hostScreen');
+  }
+
+  function exportQuestionsJSON() {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(questions, null, 2));
+    const dlAnchor = document.createElement('a');
+    dlAnchor.setAttribute("href", dataStr);
+    dlAnchor.setAttribute("download", "questions.json");
+    document.body.appendChild(dlAnchor);
+    dlAnchor.click();
+    dlAnchor.remove();
+  }
+
+  function importQuestionsJSON(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const imported = JSON.parse(e.target.result);
+        if (Array.isArray(imported)) {
+          questions = imported;
+          alert("問題セットを正常に読み込みました。");
+        }
+      } catch (err) {
+        alert("ファイルの解析に失敗しました。");
+      }
+    };
+    reader.readAsText(file);
+  }
+</script>
+
+</body>
+</html>
