@@ -239,7 +239,7 @@
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom:8px;">
       <span id="questionProgress" style="font-weight:bold;">第 1 / 5 問</span>
       <span id="quizTeamDisplay" class="team-badge">チーム未定</span>
-      <span id="timerText" style="font-weight:bold; color:#ff9800;">残り時間: 15.0秒</span>
+      <span id="timerText" style="font-weight:bold; color:#ff9800;">残り時間: 100.0秒</span>
     </div>
     
     <div class="timer-container">
@@ -337,7 +337,7 @@
 
     <h3 style="margin-top:16px;">👤 リアルタイム個人順位 & 進捗</h3>
     <table class="ranking-table">
-      <thead><tr><th>順位</th><th>名前</th><th>チーム</th><th>スコア</th><th>状態</th></tr></thead>
+      <thead><tr><th>順位</th><th>名前</th><th>チーム</th><th>スコア</th><th>状態</th><th>操作</th></tr></thead>
       <tbody id="hostRankingBody"></tbody>
     </table>
 
@@ -422,7 +422,7 @@
     "answer": 0
   },
   {
-    "q": "【第3問】(式の計算)<br>\\((-2x^2 + 3x - 5)(4x^2 - 3x - 7)\\) を展開して整理したときの \\)x^2\\) の係数を求めよ。",
+    "q": "【第3問】(式の計算)<br>\\((-2x^2 + 3x - 5)(4x^2 - 3x - 7)\\) を展開して整理したときの \\(x^2\\) の係数を求めよ。",
     "options": [
       "\\(-15\\)",
       "\\(-5\\)",
@@ -837,14 +837,26 @@
 
       conn.on('data', (data) => {
         if (data.type === 'join') {
-          let user = leaderboard.find(u => u.id === conn.peer);
+          // IDまたは同姓同名で既存ユーザーを検索（再進入時の重複を防止）
+          let user = leaderboard.find(u => u.id === conn.peer || u.name === data.name);
           if (!user) {
-            leaderboard.push({ id: conn.peer, name: data.name, class: data.class, team: "未割り当て", score: 0, isFinished: false, correctCount: 0 });
+            leaderboard.push({ 
+              id: conn.peer, 
+              name: data.name, 
+              class: data.class, 
+              team: "未割り当て", 
+              score: 0, 
+              isFinished: false, 
+              correctCount: 0 
+            });
           } else {
+            // 既存データを最新の接続情報で上書き
+            user.id = conn.peer;
             user.name = data.name;
             user.class = data.class;
           }
           updateHostUI();
+          broadcastRanking();
         } else if (data.type === 'score_update') {
           let user = leaderboard.find(u => u.id === conn.peer);
           if (user) {
@@ -858,9 +870,8 @@
       });
 
       conn.on('close', () => {
+        // 切断時は通信リストから除去（キック等との兼ね合いのためデータ保持/除去を調整）
         studentConns = studentConns.filter(c => c !== conn);
-        leaderboard = leaderboard.filter(u => u.id !== conn.peer);
-        updateHostUI();
       });
     });
   }
@@ -934,10 +945,34 @@
         ? `<span class="status-badge status-finished">完了 (${item.correctCount}/${QUESTIONS_PER_GAME})</span>`
         : `<span class="status-badge status-playing">解答中…</span>`;
 
-      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.team || '未定'}</td><td>${item.score}点</td><td>${statusHtml}</td></tr>`;
+      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.team || '未定'}</td><td>${item.score}点</td><td>${statusHtml}</td><td>
+            <button class="btn btn-danger" style="width:auto; padding:2px 8px; font-size:12px; margin:0;" onclick="kickStudent('${item.id}')">退出</button>
+          </td></tr>`;
     });
   }
 
+  // 教員が指定した生徒を強制退出させる処理
+  function kickStudent(peerId) {
+    const user = leaderboard.find(u => u.id === peerId);
+    const targetName = user ? user.name : "この生徒";
+
+    if (confirm(`${targetName} さんを退出させますか？`)) {
+      // 該当生徒へキック通知を送信
+      const conn = studentConns.find(c => c.peer === peerId);
+      if (conn) {
+        conn.send({ type: 'kicked' });
+        conn.close();
+      }
+      
+      // 管理側のリストから削除
+      leaderboard = leaderboard.filter(u => u.id !== peerId);
+      studentConns = studentConns.filter(c => c.peer !== peerId);
+      
+      updateHostUI();
+      broadcastRanking();
+    }
+  }
+  
   // --- 生徒 処理 ---
   function joinLobby() {
     myName = document.getElementById('playerName').value.trim();
@@ -979,6 +1014,11 @@
     });
 
     hostConn.on('data', (data) => {
+      if (data.type === 'kicked') {
+        alert("教員によって退出させられました。");
+        resetToTop();
+        return;
+      }
       if (data.type === 'team_assigned') {
         myTeam = data.team;
         document.getElementById('myTeamDisplay').innerText = myTeam;
@@ -991,7 +1031,7 @@
         renderTeamRankingTable('teamRankingBody', data.leaderboard);
       }
     });
-
+    
     setTimeout(() => {
       if (!isConnected && document.getElementById('lobbyScreen').classList.contains('active')) {
         retryTimer = setTimeout(tryConnectHost, 2000);
